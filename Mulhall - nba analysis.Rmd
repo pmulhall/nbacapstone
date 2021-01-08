@@ -1,0 +1,175 @@
+---
+title: "NBA Scoring Analysis"
+author: "Peter Mulhall"
+date: "12/31/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(plyr)) install.packages("plyr", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(dplyr)
+library(plyr)
+
+# Load Games
+games <- fread(text = gsub("::", "\t", readLines("games.csv")),na.strings=c("", "NA"))
+games <- na.omit(games) # remove rows with NA data
+games <- as.data.frame(games) %>%
+  mutate(PTS_total = PTS_home + PTS_away) %>% # add total points scored
+  mutate(PTS_diff = PTS_home - PTS_away) %>% # Add points difference between teams
+  mutate(HOME_TEAM_ID = as.factor(HOME_TEAM_ID),
+         VISITOR_TEAM_ID = as.factor(VISITOR_TEAM_ID),
+         HOME_TEAM_WINS = as.factor(HOME_TEAM_WINS),
+         SEASON = as.factor(SEASON))
+
+Ptsbyyear <- as_tibble(aggregate(x = games$PTS_home, by = list(games$SEASON), FUN = "mean"))
+names(Ptsbyyear)[names(Ptsbyyear) == "Group.1"] <- "Season"
+names(Ptsbyyear)[names(Ptsbyyear) == "x"] <- "AvgPoints"
+
+###### Validation Set Section #######
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = games$PTS_total, times = 1, p = 0.1, list = FALSE)
+gamedata <- games[-test_index,]
+validation <- games[test_index,]
+```
+
+# 1.0 Introduction
+
+This project is an attempt to use machine learning to predict the scores of NBA games with the goal of using historical statistics to train models in R to predict the number of points a team might score. 
+
+## 1.1 Dataset Description
+This dataset represents all NBA games played from 2003 to 2020, and was supplied by Kaggle.  It is by no means  comprehensive in the statistics which have been captured, but provides all necessary and relevant data points for our purposes of analysis for this project.
+
+Below is the head and summary of the dataset for familiarization:
+
+```{r games_head}
+str(games)
+```
+```{r games_summary}
+summary(games)
+```
+
+# 2.0 Methods and Analysis
+
+## 2.1 Data Cleaning
+
+Original data set had 99 games missing scoring information that needed to be removed before analyzing.  Also joined in Team name abbreviations as original dataset only included id numbers.  Mutated dataset to include point differentials and factor for win/loss information.
+
+## 2.2 Data Exploration and Visualization
+
+```{r fgpct}
+ggplot(games, aes(x=FG_PCT_home, y=FG_PCT_away, color=as.factor(HOME_TEAM_WINS))) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1)
+```
+As Home teams win approximately 60% of games, we can see from the above graph that they are more likely to win even when shooting more poorly than the opponents.
+
+```{r points_dist}
+points <- as.data.frame(games$PTS_home, games$PTS_away)
+ggplot(points, aes(x=games$PTS_home)) + geom_histogram() + scale_x_continuous(breaks = seq(0, 400, by = 10))
+```
+```{r teampoints_dist}
+ggplot(games, aes(y=PTS_home, x=HOME_TEAM_ID)) +
+  geom_boxplot()
+```
+  
+From this boxplot we can see that points scored by the home team do not vary wildly between teams.  While there are clear outliers, the majority of teams average scores which seem to be within approximately 20 points of each other.
+
+```{r seasonavg}
+ggplot(Ptsbyyear, aes(x=Season, y=AvgPoints)) +
+  geom_point()
+```
+
+Looking at scoring by season, the average has fluctuated, but shows a clear indication that high scoring games are becoming more frequent over time.
+
+## 2.3 Insights Gained
+From the data exploration and visualization phase we have determined that there is a significant difference in home and away team performance, so we should seek to isolate these variables for the time being.  Additionally, we may see better performance if we only evaluate using data from the same season being predicted, and eliminate or devalue outliers from the models.
+
+## 2.4 Modelling Approach
+
+Based on the insights gained, we will take a step by step approach attempting to build a substantive model one layer at a time.   Starting with the average, we will use that as a baseline to compare regression algorithms.  Next, we will attempt to add to the regression by tuning it.
+
+# 3.0 Results
+In this section we will look at the results of different models and discusses the model performance using RMSE.
+
+## 3.1 Modelling Results and Performance
+
+### 3.2 Baseline Model
+
+First we will look at the performance of a simple mean model:
+
+```{r avg_rmse}
+avg_points <- mean(games$PTS_home)  
+avg_points
+rmse_results <- tibble()
+# baseline - the average points for all home teams in games played
+baseline_rmse <- RMSE(validation$PTS_home,avg_points)
+## Test results based on simple prediction
+baseline_rmse
+rmse_results <- tibble(method = "Mean Only", RMSE = baseline_rmse)
+rmse_results
+```
+
+### 3.2 Regression Model
+
+Next we will look at a regression model, starting by considering all of the data points we have available.
+```{r reg_rmse}
+
+HomePointsModel = lm(PTS_home ~ FG_PCT_home + FT_PCT_home + FG3_PCT_home + AST_home + REB_home + FG_PCT_away + FT_PCT_away + FG3_PCT_away + HOME_TEAM_ID + VISITOR_TEAM_ID + SEASON + AST_away + REB_away, data=games)
+
+predictedscores <- predict(HomePointsModel, newdata = validation, type = "response")
+HomePointsModel_rmse <- RMSE(validation$PTS_home,predictedscores)
+
+## Test results based on regression algorithm
+rmse_results<- add_row(rmse_results, method = "Regression", RMSE = HomePointsModel_rmse)
+rmse_results
+```
+
+Using the logistic regression model we have already reduced the RMSE by half, a fantastic improvement, but can we fine tune it to make it more advanced?
+
+### 3.3 Advanced Model
+
+First we will try to improve the model by tuning to ignore outliers from negatively impacting predictions.
+
+```{r advanced_rmse}
+
+low_factors <- seq(50, 70, 1) #test for lambda value
+high_factors <- seq(140, 160, 1) #test for lambda value
+
+rmses <- sapply(high_factors, function(l){
+  
+adv_games<-games[!(games$PTS_home>l),]
+
+HomePointsModel = lm(PTS_home ~ FG_PCT_home + FT_PCT_home + FG3_PCT_home + AST_home + REB_home + FG_PCT_away + FT_PCT_away + FG3_PCT_away + HOME_TEAM_ID + VISITOR_TEAM_ID + SEASON + AST_away + REB_away, data=adv_games)
+
+advpredictedscores <- predict(HomePointsModel, newdata = validation, type = "response")
+test <- data.frame(Points = as.integer(advpredictedscores))
+
+#HomePointsModel_rmse <- RMSE(validation$PTS_home,test$Points)
+
+  return(RMSE(test$Points, validation$PTS_home))
+})
+plot(high_factors, rmses)
+
+## Test results based on regression algorithm
+rmse_results<- add_row(rmse_results, method = "Remove Outliers", RMSE = min(rmses))
+rmse_results
+```
+Using a tuning algorithm to remove severe outliers (either high or low) does not actually improve the RMSE score at all.
+
+
+# 4.0 Conclusion
+As you can see from the modeling results and performance, there is much that could be improved to increase its accuracy.  
+
+The report was limited from the data available and from the skills of its author.  More advanced metrics such as offensive or defensive rating would likely add weight to the correlation, as would number of shot attempts for each category rather than only shot percentage.  Being able to isolate which players were available to play in each specific game would also be helpful as some players have an outsized impact compared to minutes played.
+
+All of these limitations could be addressed in future work that builds on this modelling approach.
+
