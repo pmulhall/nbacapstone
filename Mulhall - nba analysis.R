@@ -4,7 +4,6 @@ if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.
 if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
 if(!require(plyr)) install.packages("plyr", repos = "http://cran.us.r-project.org")
 
-library(tidyverse)
 library(caret)
 library(data.table)
 library(dplyr)
